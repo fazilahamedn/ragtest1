@@ -3,7 +3,9 @@ import os
 import re
 import time
 from langchain_groq import ChatGroq
+from langchain_core.documents import Document
 from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains import create_retrieval_chain
@@ -14,24 +16,38 @@ load_dotenv()
 
 embeddings_dir = "embeddings"
 faiss_index_path = os.path.join(embeddings_dir, "faiss_index")
+
 # Ensure embeddings directory exists
 os.makedirs(embeddings_dir, exist_ok=True)
 
 ## Load the Groq API key
-groq_api_key = os.environ['GROQ_API_KEY']
+groq_api_key = os.getenv('GROQ_API_KEY')
 if not groq_api_key:
     st.error("Groq API key not found. Please check your .env file.")
-
 
 # Function to create and save embeddings
 def create_and_save_embeddings():
     # Initialize embeddings model
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    # Create an empty FAISS index
-    vectors = FAISS(embeddings)
-    vectors.save_local(faiss_index_path)
-    return vectors
 
+    # Create some initial dummy text for FAISS to store
+    dummy_documents = [
+        Document(page_content="This is a test document for initializing FAISS."),
+        Document(page_content="Retrieval-Augmented Generation (RAG) improves response accuracy."),
+        Document(page_content="FAISS is used for efficient similarity search.")
+    ]
+
+    # Split the dummy text into chunks
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+    final_documents = text_splitter.split_documents(dummy_documents)
+
+    # Create vector store
+    vectors = FAISS.from_documents(final_documents, embeddings)
+    
+    # Save the FAISS index
+    vectors.save_local(faiss_index_path)
+
+    return vectors
 
 # Function to load embeddings
 def load_embeddings():
@@ -46,25 +62,15 @@ def load_embeddings():
     else:
         return create_and_save_embeddings()
 
-
 # Initialize or load vector store
 if "vectors" not in st.session_state:
     st.session_state.vectors = load_embeddings()
-
-# Initialize submitted flag if it doesn't exist
-if "submitted" not in st.session_state:
-    st.session_state.submitted = False
-
-
-# Function to handle form submission
-def handle_submit():
-    st.session_state.submitted = True
-
 
 st.markdown("<h1 style='text-align: center;'>RAG Demo</h1>", unsafe_allow_html=True)
 
 # Initialize the LLM
 llm = ChatGroq(model="deepseek-r1-distill-qwen-32b")
+
 prompt = ChatPromptTemplate.from_template(
     """
     Answer the questions based on the provided context only.
@@ -84,32 +90,28 @@ if st.session_state.vectors:
     retriever = st.session_state.vectors.as_retriever()
     retrieval_chain = create_retrieval_chain(retriever, document_chain)
 
-    # Create a form for user input
-    with st.form(key="query_form"):
-        user_prompt = st.text_input("Input your prompt here", key="user_input", max_chars=200,
-                                    label_visibility="collapsed")
-        submit_button = st.form_submit_button("Submit", on_click=handle_submit)
+    # User input
+    user_prompt = st.text_input("Input your prompt here", key="user_input", max_chars=200, label_visibility="collapsed")
 
-    # Handle the submission
-    if st.session_state.submitted:
-        if user_prompt:  # Only process if there's actual input
-            with st.spinner("Generating response..."):
-                start = time.time()
-                response = retrieval_chain.invoke({"input": user_prompt})
-                end = time.time()
+    if user_prompt:
+        with st.spinner("Generating response..."):
+            start = time.time()
+            response = retrieval_chain.invoke({"input": user_prompt})
+            end = time.time()
 
-                # Remove the <think>...</think> section from the answer
-                cleaned_answer = re.sub(r'<think>.*?</think>', '', response['answer'], flags=re.DOTALL).strip()
-                st.write(cleaned_answer)
-                st.caption(f"Response time: {end - start:.2f} seconds")
+            # Remove the <think>...</think> section from the answer
+            cleaned_answer = re.sub(r'<think>.*?</think>', '', response['answer'], flags=re.DOTALL).strip()
 
-                # With a streamlit expander
-                with st.expander("Document Similarity Search"):
-                    for doc in response.get("context", []):
-                        st.write(doc.page_content)
-                        st.write("--------------------------------")
+            st.write(cleaned_answer)
+            st.caption(f"Response time: {end - start:.2f} seconds")
 
-        # Reset the submitted flag for the next interaction
-        st.session_state.submitted = False
+            # Clear input after submission
+            st.session_state.user_input = ""
+
+            # With a streamlit expander
+            with st.expander("Document Similarity Search"):
+                for doc in response.get("context", []):
+                    st.write(doc.page_content)
+                    st.write("--------------------------------")
 else:
     st.error("Failed to initialize vector store. Please check the logs for details.")
