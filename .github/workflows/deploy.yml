@@ -1,4 +1,4 @@
-name: Deploy
+name: Deploy Streamlit App
 
 on: [push]
 
@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v3
 
       - name: Set up Python
@@ -16,9 +16,12 @@ jobs:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: pip install python-dotenv
+        run: |
+          pip install -r requirements.txt
+          pip install streamlit  # Ensure Streamlit is installed
 
-      - name: Run Python script with Secret
+      - name: Run Streamlit App
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}  # Inject API key as an environment variable
-        run: python app.py
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}  # Inject API Key
+        run: |
+          streamlit run app.py --server.headless true
