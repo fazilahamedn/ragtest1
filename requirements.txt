@@ -1,0 +1,10 @@
+streamlit
+langchain
+langchain-groq
+langchain-community
+langchain-core
+faiss-cpu
+bm25
+python-dotenv
+requests
+sentence-transformers
