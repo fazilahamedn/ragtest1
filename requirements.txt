@@ -8,3 +8,5 @@ bm25
 python-dotenv
 requests
 sentence-transformers
+ollama
+nomic-embed-text
