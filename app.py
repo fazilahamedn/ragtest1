@@ -3,7 +3,9 @@ import os
 import re
 import time
 from langchain_groq import ChatGroq
-from langchain_community.embeddings import HuggingFaceEmbeddings  # Fixed import path
+from langchain_core.documents import Document
+from langchain.embeddings import OllamaEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains import create_retrieval_chain
@@ -12,131 +14,110 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+txt_path = "universal_declaration_of_human_rights.txt"
 embeddings_dir = "embeddings"
 faiss_index_path = os.path.join(embeddings_dir, "faiss_index")
+
 # Ensure embeddings directory exists
 os.makedirs(embeddings_dir, exist_ok=True)
 
 ## Load the Groq API key
-groq_api_key = os.environ.get('GROQ_API_KEY')  # Using get() to avoid KeyError
+groq_api_key = os.getenv('GROQ_API_KEY')
 if not groq_api_key:
     st.error("Groq API key not found. Please check your .env file.")
-    st.stop()
-
 
 # Function to create and save embeddings
 def create_and_save_embeddings():
+    # Initialize embeddings model
+    embeddings = OllamaEmbeddings(model="nomic-embed-text")
+
+    # Load the text data
     try:
-        # Initialize embeddings model
-        embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={'device': 'cpu'}  # Force CPU usage to avoid CUDA issues
-        )
-        # Create an empty FAISS index
-        vectors = FAISS.from_embeddings([], [], embeddings)  # Create with empty lists
-        vectors.save_local(faiss_index_path)
-        return vectors
-    except Exception as e:
-        st.error(f"Error creating embeddings: {str(e)}")
+        with open(txt_path, "r", encoding="utf-8") as file:
+            txt_data = file.read()
+    except FileNotFoundError:
+        st.error("TXT file not found. Please check the path.")
         return None
 
+    # Convert text into Document objects
+    documents = [Document(page_content=txt_data)]
+
+    # Splitting text into chunks
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    final_documents = text_splitter.split_documents(documents)
+
+    # Create vector store
+    vectors = FAISS.from_documents(final_documents, embeddings)
+
+    # Save the FAISS index
+    vectors.save_local(faiss_index_path)
+
+    return vectors
 
 # Function to load embeddings
 def load_embeddings():
     if os.path.exists(faiss_index_path):
         try:
-            st.info("Loading existing embeddings...")
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={'device': 'cpu'}  # Force CPU usage to avoid CUDA issues
-            )
+            # Initialize embeddings model
+            embeddings = OllamaEmbeddings(model="nomic-embed-text")
+
+            # Load FAISS index with allowed deserialization
             vectors = FAISS.load_local(faiss_index_path, embeddings, allow_dangerous_deserialization=True)
-            st.success("Embeddings loaded successfully!")
+
             return vectors
         except Exception as e:
-            st.error(f"Error loading embeddings: {str(e)}")
-            st.info("Creating new embeddings...")
+            st.error(f"Error loading embeddings: {e}")
             return create_and_save_embeddings()
     else:
-        st.info("No existing embeddings found. Creating new embeddings...")
         return create_and_save_embeddings()
-
-
-# Page title
-st.markdown("<h1 style='text-align: center;'>RAG Demo</h1>", unsafe_allow_html=True)
 
 # Initialize or load vector store
 if "vectors" not in st.session_state:
     st.session_state.vectors = load_embeddings()
 
-# Initialize submitted flag if it doesn't exist
-if "submitted" not in st.session_state:
-    st.session_state.submitted = False
+st.title("ChatGroq Demo")
 
+# Initialize the LLM
+llm = ChatGroq(model="deepseek-r1-distill-qwen-32b")
 
-# Function to handle form submission
-def handle_submit():
-    st.session_state.submitted = True
+prompt = ChatPromptTemplate.from_template(
+    """
+    Answer the questions based on the provided context only.
+    Please provide the most accurate response based on the question.
+    <context>
+    {context}
+    <context>
+    Question: {input}
+    """
+)
 
+# Create the document chain
+document_chain = create_stuff_documents_chain(llm, prompt)
 
-# Only proceed if embeddings are loaded
+# Create the retriever
 if st.session_state.vectors:
-    try:
-        # Initialize the LLM
-        llm = ChatGroq(model="deepseek-r1-distill-qwen-32b")
-        
-        # Create prompt template - Fixed the context tags
-        prompt = ChatPromptTemplate.from_template(
-            """
-            Answer the questions based on the provided context only.
-            Please provide the most accurate response based on the question.
-            <context>
-            {context}
-            </context>
-            Question: {input}
-            """
-        )
+    retriever = st.session_state.vectors.as_retriever()
+    retrieval_chain = create_retrieval_chain(retriever, document_chain)
 
-        # Create the document chain
-        document_chain = create_stuff_documents_chain(llm, prompt)
+    # User input
+    user_prompt = st.text_input("Input your prompt here")
 
-        # Create the retriever
-        retriever = st.session_state.vectors.as_retriever()
-        retrieval_chain = create_retrieval_chain(retriever, document_chain)
+    if user_prompt:
+        with st.spinner("Generating response..."):
+            start = time.time()
+            response = retrieval_chain.invoke({"input": user_prompt})
+            end = time.time()
 
-        # Create a form for user input
-        with st.form(key="query_form"):
-            user_prompt = st.text_input("Input your prompt here", key="user_input", max_chars=200,
-                                    label_visibility="collapsed")
-            submit_button = st.form_submit_button("Submit", on_click=handle_submit)
+            # Remove the <think>...</think> section from the answer
+            cleaned_answer = re.sub(r'<think>.*?</think>', '', response['answer'], flags=re.DOTALL).strip()
 
-        # Handle the submission
-        if st.session_state.submitted:
-            if user_prompt:  # Only process if there's actual input
-                with st.spinner("Generating response..."):
-                    start = time.time()
-                    try:
-                        response = retrieval_chain.invoke({"input": user_prompt})
-                        end = time.time()
+            st.write(cleaned_answer)
+            st.caption(f"Response time: {end - start:.2f} seconds")
 
-                        # Remove the <think>...</think> section from the answer
-                        cleaned_answer = re.sub(r'<think>.*?</think>', '', response['answer'], flags=re.DOTALL).strip()
-                        
-                        # Display the answer
-                        st.write(cleaned_answer)
-                        st.caption(f"Response time: {end - start:.2f} seconds")
-
-                        # Show retrieved documents
-                        with st.expander("Document Similarity Search"):
-                            for doc in response.get("context", []):
-                                st.write(doc.page_content)
-                                st.write("--------------------------------")
-                    except Exception as e:
-                        st.error(f"Error generating response: {str(e)}")
-
-            # Reset the submitted flag for the next interaction
-            st.session_state.submitted = False
-    except Exception as e:
-        st.error(f"Error initializing LLM or chain: {str(e)}")
+            # With a streamlit expander
+            with st.expander("Document Similarity Search"):
+                for doc in response.get("context", []):
+                    st.write(doc.page_content)
+                    st.write("--------------------------------")
 else:
     st.error("Failed to initialize vector store. Please check the logs for details.")
