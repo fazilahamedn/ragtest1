@@ -18,7 +18,7 @@ faiss_index_path = os.path.join(embeddings_dir, "faiss_index")
 os.makedirs(embeddings_dir, exist_ok=True)
 
 ## Load the Groq API key
-groq_api_key = os.getenv('GROQ_API_KEY')
+groq_api_key = os.getenv.get('GROQ_API_KEY', "${{secrets.GROQ_API_KEY}}")
 if not groq_api_key:
     st.error("Groq API key not found. Please check your .env file.")
 
